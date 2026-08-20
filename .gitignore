@@ -1,0 +1,57 @@
+# Python environments
+.venv/
+venv/
+env/
+ENV/
+
+# Python cache and build artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+build/
+dist/
+*.egg-info/
+
+# Environment variables, credentials, and secrets
+.env
+.env.*
+!.env.example
+secrets/
+*.secret
+*.secrets
+*credentials*
+*credential*
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Jupyter temporary files
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/
+
+# Temporary outputs and local artifacts
+outputs/tmp/
+tmp/
+temp/
+*.tmp
+*.temp
+*.log
+
+# Power BI local and cache artifacts
+*.pbix
+*.pbit
+*.pbip.Local/
+*.AnalysisServicesWorkspace/
+
+# Operating system and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
+*.swp
+*.swo
