@@ -21,12 +21,13 @@ It does not download files, resolve DANE URLs, modify RAW files, connect to Powe
 Sources are applied in this order:
 
 1. Existing repository code.
-2. `docs/architecture/pib-data-model.md` (required by this specification, but absent from the repository at the time of writing).
+2. `docs/architecture/pib-data-model.md`.
 3. `docs/research/dane-pib-xlsx-structure.md`.
-4. The task-defined contract and constraints.
-5. Explicitly labelled technical inferences.
+4. Transformer specification constraints.
 
 The research document inspected one real workbook and labels observations as observed, inferred, or pending. Its findings must not be treated as proof of historical stability.
+
+The PIB data model is the approved data contract and defines what must be produced. This specification defines how the transformer constructs and validates that model; it does not redefine its schema, keys, types, relationships, or controlled values.
 
 ## 4. Architectural Context
 
@@ -75,9 +76,9 @@ The analytical model contains:
 - `dim_fuente`;
 - `fact_pib`.
 
-`fact_pib` contains exactly the contract fields specified for this work: `fecha_id`, `actividad_id`, `indicador_id`, `fuente_id`, `tipo_serie`, `estado_dato`, and `valor`. The exact surrogate-key definitions, types, and additional dimension columns remain governed by `docs/architecture/pib-data-model.md` once that document exists and must not be invented here.
+The Data Contract defines the exact schema. `fact_pib` contains `fecha_id`, `actividad_id`, `indicador_id`, `fuente_id`, `tipo_serie`, `estado_dato`, and `valor`. Its foreign keys are `INTEGER`, controlled text fields are non-null, and `valor` is a non-null `DECIMAL`. The dimensions and their fields, types, constraints, and relationships must be reproduced exactly from the Data Contract.
 
-Parquet is the planned analytical format. Output files should use stable column names, explicit types, UTF-8 text encoding, and deterministic row ordering. Expected filenames and any final schema details must be confirmed against the missing data model before implementation.
+Parquet is the planned analytical format. Output files should use the Data Contract's stable column names and conceptual types, UTF-8 text encoding, and deterministic row ordering. The contract defines the logical outputs; the implementation may choose physical filenames without changing that schema.
 
 ## 7. Transformation Pipeline
 
@@ -183,9 +184,9 @@ Activity records are identified from descriptor columns and the table's CIIU con
 
 The extractor must distinguish activity rows from structural rows by requiring the applicable activity code and concept/name, checking the row's position inside a detected data block, and recognizing structural labels such as headers, subtitles, notes, separators, metadata, and blank rows. Numeric cells do not make a row an activity.
 
-`Producto Interno Bruto` belongs in `dim_actividad` and is represented in `fact_pib` with the same dimensions as other observations. No `fact_pib_total` or special total table is created. The observed PIB code is `B.1b`, but codes must always be read from the workbook and not hardcoded.
+`Producto Interno Bruto` belongs in `dim_actividad` and is represented in `fact_pib` with the same dimensions as other observations. No `fact_pib_total` or special total table is created. The Data Contract permits activity and macroeconomic aggregate rows in this dimension. The observed PIB code is `B.1b`, but codes must always be read from the workbook and not hardcoded.
 
-Missing required code/name, a row that cannot be classified, or a level inconsistent with the table's CIIU heading produces `ActivityError` or `StructureError` with sheet and row context. The open question about whether an explicit entity type is needed is recorded below; this specification keeps aggregate activities in the same activity dimension.
+Missing required code/name, a row that cannot be classified, or a level inconsistent with the table's CIIU heading produces `ActivityError` or `StructureError` with sheet and row context. The transformer must construct the contract's `dim_actividad` without adding an entity-type field or moving aggregate rows to another table.
 
 ## 15. Value Normalization
 
@@ -206,16 +207,16 @@ No value is recalculated, economically adjusted, or silently replaced. Raw cell 
 
 ## 16. Dimension Construction
 
-Dimensions are built from normalized records and source metadata, after validation of their source attributes. The exact columns and surrogate-key policy remain the responsibility of the data model document, which is currently missing.
+The Data Contract defines the schema; this specification defines the construction process. Dimensions are built from normalized records and source metadata after validation of their source attributes. The transformer must emit the following contract fields and constraints:
 
 | Dimension | Origin | Natural identity and rules |
 |---|---|---|
-| `dim_fecha` | Normalized period and original period/status context | One row per contract-defined natural period identity; valid `YYYY-QN`, deterministic deduplication, no conflicting attributes. |
-| `dim_actividad` | Workbook code, concept/name, and CIIU aggregation context | Code plus contract-defined level/context; preserve source text, require name, reject conflicting duplicates. Includes `Producto Interno Bruto`. |
-| `dim_indicador` | Detected block label, indicator, and unit context | One row per contract-defined indicator identity; only the four controlled indicators, with unit consistency validated. |
-| `dim_fuente` | `SourceManifest` and workbook notes | Natural identity must include the contract-defined source/provenance fields; all observations from this run reference a valid source row. |
+| `dim_fecha` | Normalized period | `fecha_id INTEGER` primary key; `fecha DATE` is the first day of the quarter; `anio SMALLINT`; `trimestre SMALLINT` in 1-4; `periodo VARCHAR(7)` in `YYYY-QN`; all are non-null. Use the contract's deterministic period identifier, e.g. `202602` for 2026-Q2. |
+| `dim_actividad` | Workbook code, concept/name, and CIIU aggregation context | `actividad_id INTEGER` primary key; `actividad_codigo VARCHAR`, `actividad_nombre VARCHAR`, and `nivel_agregacion SMALLINT` are non-null. Natural key is `nivel_agregacion + actividad_codigo` and must be unique. |
+| `dim_indicador` | Detected block label and unit context | `indicador_id INTEGER` primary key; `indicador_codigo VARCHAR(40)`, `indicador_nombre VARCHAR(120)`, and `unidad VARCHAR(40)` are non-null; `descripcion VARCHAR(255)` is nullable. One row per controlled indicator/unit identity. |
+| `dim_fuente` | `SourceManifest` and workbook notes | `fuente_id INTEGER` primary key; `fuente VARCHAR(50)`, `operacion VARCHAR(100)`, `archivo_nombre VARCHAR(255)`, `url TEXT`, `fecha_descarga TIMESTAMP`, and `sha256 CHAR(64)` are non-null. The source metadata plus SHA-256 identifies the file version. |
 
-Surrogate keys, if required by the contract, must be generated deterministically from a stable natural-key ordering or resolved from a stable dimension store. They must not depend on hash-map order, execution timestamp, or row discovery accidents. Deduplication is an explicit natural-key operation; it is not a silent `drop_duplicates()`.
+All dimension primary keys are `INTEGER` and are referenced by the corresponding fact foreign key. Generate or resolve them according to the Data Contract; they must be stable for the same logical input and must not depend on execution timestamp, hash-map order, or row discovery accidents. Deduplication is an explicit natural-key operation; it is not a silent `drop_duplicates()`.
 
 ## 17. Fact Construction
 
@@ -352,7 +353,7 @@ A fact without a resolvable source record is invalid.
 
 The target location is `data/processed/pib/`. Parquet is the planned analytical format, with explicit schema and UTF-8 string columns. The initial output should be simple and non-partitioned, because the current evidence does not establish a performance need for partitioning. If partitioning is later introduced, it must be documented and deterministic, and it must not change the logical schema.
 
-Expected logical outputs are the four dimensions and `fact_pib`. Exact filenames, partition keys, surrogate-key widths, nullability, and complete dimension schemas must be taken from `docs/architecture/pib-data-model.md` before implementation. No output files are created by this specification.
+Expected logical outputs are exactly the four dimensions and `fact_pib`, with the tables, fields, types, nullability, keys, relationships, and controlled domains defined by `docs/architecture/pib-data-model.md`. No output files are created by this specification.
 
 ## 25. Testing Strategy
 
@@ -442,22 +443,20 @@ flowchart LR
 
 ## 28. Open Questions
 
-1. **Where is the authoritative PIB data model?** The task requires `docs/architecture/pib-data-model.md`, but that file is absent; only `docs/architecture.md` exists. This affects exact dimension columns, natural keys, surrogate-key rules, types, nullability, and filenames. Recommendation: add or restore the authoritative data model before implementation and resolve this specification against it; do not infer or silently alter the contract.
+The following questions remain open because they concern future DANE publications or implementation policy, not the approved star-schema contract:
 
-2. **What is the exact meaning of an empty temporal cell?** The inspected workbook contains empty cells caused by descriptors, merged headers, and areas without data, but one publication is insufficient to establish missing-data semantics. This affects whether an empty cell is omitted, represented as null, or treated as an error. Recommendation: confirm with multiple DANE publications and methodology; fail when an expected value is ambiguous until the rule is approved.
+1. **What is the exact meaning of an empty temporal cell?** The inspected workbook contains empty cells caused by descriptors, merged headers, and areas without data, but one publication is insufficient to establish missing-data semantics. This affects whether an empty cell is omitted or treated as an error. Recommendation: confirm with multiple DANE publications and methodology; fail when an expected value is ambiguous until the rule is approved.
 
-3. **Are status markers scoped consistently across all blocks and future updates?** The observed workbook uses `p` and `pr` in year headers and explanatory notes, but the scope/order may change. This affects state propagation to facts. Recommendation: add fixtures covering status scope and require an explicit structural match.
+2. **Are status markers scoped consistently across all blocks and future updates?** The observed workbook uses `p` and `pr` in year headers and explanatory notes, but the scope/order may change. This affects status propagation to facts. Recommendation: add fixtures covering status scope and require an explicit structural match.
 
-4. **Are block semantics stable across future updates?** The research observes annual growth in original tables and quarterly growth in adjusted tables, while year-to-date growth appears in both. This affects indicator mapping and unit validation. Recommendation: confirm against DANE methodology and later workbooks; fail on semantic drift.
+3. **Are block semantics stable across future updates?** The research observes annual growth in original tables and quarterly growth in adjusted tables, while year-to-date growth appears in both. This affects indicator mapping and unit validation. Recommendation: confirm against DANE methodology and later workbooks; fail on semantic drift.
 
-5. **Should activity and aggregate macroeconomic rows have an explicit entity type?** The research leaves this pending. The current rule keeps `Producto Interno Bruto` and other aggregate rows in `dim_actividad`, but the final data model may define additional attributes. Recommendation: decide in the authoritative data model without creating a separate fact table.
+4. **Should the current manifest's quarter inference be extended for names such as `IItrim2026`?** The resolver currently leaves that observed filename pattern unmatched while workbook headers identify the period. This affects manifest metadata, not workbook extraction. Recommendation: address in the source-resolver scope after confirming ownership; the transformer must rely on workbook headers for analytical periods.
 
-6. **What is the final output filename and schema?** The destination and Parquet intent are known, but exact names, partitioning, and complete dimension schemas depend on the missing data model. Recommendation: define them before implementation; use the simple non-partitioned strategy initially.
-
-7. **Should the current manifest's quarter inference be extended for names such as `IItrim2026`?** The resolver currently leaves that observed filename pattern unmatched while workbook headers identify the period. This affects manifest metadata, not workbook extraction. Recommendation: address in the source-resolver scope after confirming ownership; the transformer must rely on workbook headers for analytical periods.
+5. **How should revisions be stored and queried physically?** The Data Contract requires source versions to coexist and not be silently overwritten, but leaves the implementation mechanism outside its scope. Recommendation: define this in the storage implementation while preserving `fuente_id` and SHA-256 in the fact lineage.
 
 ## 29. Change History
 
 | Version | Date | Change |
 |---|---|---|
-| v1.0 | 2026-08-22 | Initial PIB transformer technical specification. |
+| v1.0 | 2026-08-22 | Initial PIB transformer technical specification, aligned with the approved PIB data contract. |
