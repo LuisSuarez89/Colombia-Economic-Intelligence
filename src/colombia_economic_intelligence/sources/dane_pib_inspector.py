@@ -98,7 +98,15 @@ def _is_structural_table(sheet: Any) -> bool:
     has_series = (
         "datos originales" in lowered or "datos ajustados por efecto estacional y calendario" in lowered
     )
-    has_expected_aggregation = any(f"{level} agrupaciones" in lowered for level in EXPECTED_LEVELS)
+    has_structural_context = any(
+        token in lowered
+        for token in (
+            "series encadenadas de volumen",
+            "clasificación cuentas nacionales",
+            "codigo concepto",
+            "producto interno bruto",
+        )
+    )
     has_indicator_block = any(
         phrase in lowered
         for phrase in (
@@ -110,10 +118,7 @@ def _is_structural_table(sheet: Any) -> bool:
             "tasa de crecimiento ano corrido",
         )
     )
-    sheet_name_match = re.fullmatch(r"cuadro [1-6]", sheet.title, re.IGNORECASE)
-    if sheet_name_match and has_series and has_indicator_block:
-        return True
-    return bool(has_series and has_expected_aggregation and has_indicator_block)
+    return bool(has_series and has_indicator_block and has_structural_context)
 
 
 def _detect_series(text: str, sheet_name: str) -> str:
@@ -149,8 +154,19 @@ def _detect_indicators(text: str, adjusted: bool) -> tuple[str, ...]:
             "codigo concepto",
         )
     )
+    if not has_structural_context:
+        return ()
+
     found: set[str] = set()
-    if "miles de millones de pesos" in lowered and has_structural_context:
+    if (
+        "miles de millones de pesos" in lowered
+        and (
+            "series encadenadas de volumen" in lowered
+            or "clasificación cuentas nacionales" in lowered
+            or "codigo concepto" in lowered
+            or "producto interno bruto" in lowered
+        )
+    ):
         found.add("NIVEL")
     if "tasa de crecimiento anual" in lowered:
         found.add("CRECIMIENTO_ANUAL")
@@ -164,35 +180,70 @@ def _detect_indicators(text: str, adjusted: bool) -> tuple[str, ...]:
 def _parse_periods(sheet: Any) -> tuple[set[str], set[str]]:
     periods: set[str] = set()
     statuses: set[str] = set()
-    for quarter_row in range(2, sheet.max_row + 1):
-        quarter_cells = {
-            cell.column: _QUARTERS[_text(cell.value).upper()]
-            for cell in sheet[quarter_row]
-            if _text(cell.value).upper() in _QUARTERS
-        }
-        if not quarter_cells:
+
+    for year_row in range(1, sheet.max_row):
+        year_by_column: dict[int, tuple[int, str | None]] = {}
+        current_year: tuple[int, str | None] | None = None
+
+        for column in range(1, sheet.max_column + 1):
+            raw = _text(sheet.cell(year_row, column).value)
+            if not raw:
+                if current_year is not None:
+                    year_by_column[column] = current_year
+                continue
+
+            match = _YEAR_PATTERN.fullmatch(raw)
+            if match:
+                current_year = (int(match.group(1)), match.group(2).lower() if match.group(2) else None)
+                year_by_column[column] = current_year
+                continue
+
+            if _YEAR_WITH_UNKNOWN_STATUS_PATTERN.fullmatch(raw):
+                raise UnexpectedStatusError(
+                    f"Unexpected publication status in {sheet.title}!{get_column_letter(column)}{year_row}: {raw}"
+                )
+
+        if not year_by_column:
             continue
-        for year_row in range(max(1, quarter_row - 3), quarter_row):
-            effective_year: tuple[int, str | None] | None = None
-            found_for_row = False
-            for column in range(1, sheet.max_column + 1):
-                raw = _text(sheet.cell(year_row, column).value)
-                match = _YEAR_PATTERN.fullmatch(raw)
-                if match:
-                    effective_year = (int(match.group(1)), match.group(2).lower() if match.group(2) else None)
-                elif _YEAR_WITH_UNKNOWN_STATUS_PATTERN.fullmatch(raw):
-                    raise UnexpectedStatusError(f"Unexpected publication status in {sheet.title}!{get_column_letter(column)}{year_row}: {raw}")
-                if column not in quarter_cells or effective_year is None:
-                    continue
-                year, status = effective_year
-                if status:
-                    statuses.add(status)
-                    if status not in EXPECTED_STATUSES:
-                        raise UnexpectedStatusError(f"Unexpected publication status {status!r} in {sheet.title}")
-                periods.add(f"{year}-Q{quarter_cells[column]}")
-                found_for_row = True
-            if found_for_row:
-                break
+
+        quarter_by_column: dict[int, int] = {}
+        for column in range(1, sheet.max_column + 1):
+            raw = _text(sheet.cell(year_row + 1, column).value)
+            quarter = _QUARTERS.get(raw.upper())
+            if quarter is not None:
+                quarter_by_column[column] = quarter
+
+        if not quarter_by_column:
+            continue
+
+        for column in sorted(quarter_by_column):
+            if column not in year_by_column:
+                continue
+            year, status = year_by_column[column]
+            quarter = quarter_by_column[column]
+            if status:
+                statuses.add(status)
+                if status not in EXPECTED_STATUSES:
+                    raise UnexpectedStatusError(f"Unexpected publication status {status!r} in {sheet.title}")
+            periods.add(f"{year}-Q{quarter}")
+
+        for column in sorted(quarter_by_column):
+            if column in year_by_column:
+                continue
+            effective_year = None
+            for previous_column in range(1, column):
+                if previous_column in year_by_column:
+                    effective_year = year_by_column[previous_column]
+            if effective_year is None:
+                continue
+            year, status = effective_year
+            quarter = quarter_by_column[column]
+            if status:
+                statuses.add(status)
+                if status not in EXPECTED_STATUSES:
+                    raise UnexpectedStatusError(f"Unexpected publication status {status!r} in {sheet.title}")
+            periods.add(f"{year}-Q{quarter}")
+
     return periods, statuses
 
 

@@ -10,6 +10,7 @@ from colombia_economic_intelligence.sources.dane_pib_inspector import (
     UnsupportedWorkbookError,
     WorkbookInspectionError,
     _detect_indicators,
+    _parse_periods,
 )
 
 
@@ -27,10 +28,11 @@ def create_workbook(path: Path) -> None:
             else "Datos originales"
         )
         sheet["B3"] = f"Secciones CIIU Rev. 4 A.C. {level} agrupaciones"
-        sheet["B4"] = "Miles de millones de pesos"
-        sheet["B5"] = "Tasa de crecimiento trimestral" if adjusted else "Tasa de crecimiento anual"
-        sheet["B6"] = "Tasa de crecimiento año corrido"
-        sheet["B7"] = "Código Concepto Producto Interno Bruto"
+        sheet["B4"] = "Series encadenadas de volumen con año de referencia 2015"
+        sheet["B5"] = "Miles de millones de pesos"
+        sheet["B6"] = "Tasa de crecimiento trimestral" if adjusted else "Tasa de crecimiento anual"
+        sheet["B7"] = "Tasa de crecimiento año corrido"
+        sheet["B8"] = "Código Concepto Producto Interno Bruto"
         sheet["F10"] = "2025p"
         sheet["G10"] = "2026pr"
         sheet["F11"] = "IV"
@@ -116,9 +118,10 @@ def test_detects_table_by_structural_evidence_even_with_modified_sheet_name(tmp_
             else "Datos originales"
         )
         sheet["B3"] = f"Secciones CIIU Rev. 4 A.C. {level} agrupaciones"
-        sheet["B4"] = "Miles de millones de pesos"
-        sheet["B5"] = "Tasa de crecimiento trimestral" if adjusted else "Tasa de crecimiento anual"
-        sheet["B6"] = "Tasa de crecimiento año corrido"
+        sheet["B4"] = "Series encadenadas de volumen con año de referencia 2015"
+        sheet["B5"] = "Miles de millones de pesos"
+        sheet["B6"] = "Tasa de crecimiento trimestral" if adjusted else "Tasa de crecimiento anual"
+        sheet["B7"] = "Tasa de crecimiento año corrido"
         sheet["F10"] = "2025p"
         sheet["G10"] = "2026pr"
         sheet["F11"] = "IV"
@@ -156,6 +159,30 @@ def test_unit_phrase_without_structural_context_is_not_auto_level() -> None:
     text = "Miles de millones de pesos."
 
     assert _detect_indicators(text, adjusted=False) == ()
+
+
+def test_non_relevant_note_does_not_infer_indicator() -> None:
+    text = "Nota: Tasa de crecimiento anual aparece en una sección de texto no estructural."
+
+    assert _detect_indicators(text, adjusted=False) == ()
+
+
+def test_parse_periods_tracks_years_statuses_and_quarters() -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Cuadro 1"
+    sheet["A10"] = "2025p"
+    sheet["A11"] = "IV"
+    sheet["D10"] = "2026pr"
+    sheet["D11"] = "I"
+    sheet["E11"] = "II"
+    sheet["F10"] = "2026pr"
+    sheet["F11"] = "III"
+
+    periods, statuses = _parse_periods(sheet)
+
+    assert periods == {"2025-Q4", "2026-Q1", "2026-Q2", "2026-Q3"}
+    assert statuses == {"p", "pr"}
 
 
 def test_inspection_is_idempotent(tmp_path: Path) -> None:
