@@ -9,6 +9,7 @@ from colombia_economic_intelligence.sources.dane_pib_inspector import (
     UnexpectedStatusError,
     UnsupportedWorkbookError,
     WorkbookInspectionError,
+    _detect_indicators,
 )
 
 
@@ -98,6 +99,56 @@ def test_unexpected_status_fails(tmp_path: Path) -> None:
 
     with pytest.raises(UnexpectedStatusError):
         PIBWorkbookInspector().inspect(path)
+
+
+def test_detects_table_by_structural_evidence_even_with_modified_sheet_name(tmp_path: Path) -> None:
+    path = tmp_path / "renamed-sheet.xlsx"
+    workbook = Workbook()
+    workbook.active.title = "Índice"
+    workbook.active["A1"] = "Producto Interno Bruto"
+    for number in range(1, 7):
+        sheet = workbook.create_sheet(f"Hoja {number}")
+        adjusted = number >= 4
+        level = (12, 25, 61)[(number - 1) % 3]
+        sheet["B2"] = (
+            "Datos ajustados por efecto estacional y calendario"
+            if adjusted
+            else "Datos originales"
+        )
+        sheet["B3"] = f"Secciones CIIU Rev. 4 A.C. {level} agrupaciones"
+        sheet["B4"] = "Miles de millones de pesos"
+        sheet["B5"] = "Tasa de crecimiento trimestral" if adjusted else "Tasa de crecimiento anual"
+        sheet["B6"] = "Tasa de crecimiento año corrido"
+        sheet["F10"] = "2025p"
+        sheet["G10"] = "2026pr"
+        sheet["F11"] = "IV"
+        sheet["G11"] = "I"
+        sheet["H11"] = "II"
+    workbook.save(path)
+
+    result = PIBWorkbookInspector().inspect(path)
+
+    assert len(result.detected_tables) == 6
+    assert all(table.sheet.startswith("Hoja ") for table in result.detected_tables)
+
+
+def test_detect_indicators_from_labels_not_units() -> None:
+    text = (
+        "Datos originales. "
+        "Miles de millones de pesos. "
+        "Tasa de crecimiento anual. "
+        "Tasa de crecimiento trimestre. "
+        "Tasa de crecimiento año corrido."
+    )
+
+    indicators = _detect_indicators(text, adjusted=False)
+
+    assert set(indicators) == {
+        "NIVEL",
+        "CRECIMIENTO_ANUAL",
+        "CRECIMIENTO_TRIMESTRAL",
+        "CRECIMIENTO_ANO_CORRIDO",
+    }
 
 
 def test_inspection_is_idempotent(tmp_path: Path) -> None:

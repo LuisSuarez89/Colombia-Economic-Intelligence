@@ -1,14 +1,14 @@
 """Resolve and download DANE quarterly GDP production XLSX sources."""
 from __future__ import annotations
 
+import os
+import re
+import tempfile
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from html.parser import HTMLParser
 from pathlib import Path
-import os
-import re
-import tempfile
 from urllib.parse import unquote, urljoin, urlparse
 
 import requests

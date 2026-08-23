@@ -1,15 +1,14 @@
 """Structural inspection of DANE quarterly GDP XLSX workbooks."""
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-import re
 from typing import Any
 from zipfile import BadZipFile
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
-
 
 EXPECTED_LEVELS = frozenset({12, 25, 61})
 EXPECTED_SERIES = frozenset({"ORIGINAL", "AJUSTADA_ESTACIONAL_CALENDARIO"})
@@ -93,6 +92,30 @@ def _sheet_text(sheet: Any) -> str:
     return " ".join(_text(cell.value) for row in sheet.iter_rows() for cell in row if cell.value is not None)
 
 
+def _is_structural_table(sheet: Any) -> bool:
+    text = _sheet_text(sheet)
+    lowered = text.casefold()
+    has_series = (
+        "datos originales" in lowered or "datos ajustados por efecto estacional y calendario" in lowered
+    )
+    has_expected_aggregation = any(f"{level} agrupaciones" in lowered for level in EXPECTED_LEVELS)
+    has_indicator_block = any(
+        phrase in lowered
+        for phrase in (
+            "miles de millones de pesos",
+            "tasa de crecimiento anual",
+            "tasa de crecimiento trimestre",
+            "tasa de crecimiento trimestral",
+            "tasa de crecimiento año corrido",
+            "tasa de crecimiento ano corrido",
+        )
+    )
+    sheet_name_match = re.fullmatch(r"cuadro [1-6]", sheet.title, re.IGNORECASE)
+    if sheet_name_match and has_series and has_indicator_block:
+        return True
+    return bool(has_series and has_expected_aggregation and has_indicator_block)
+
+
 def _detect_series(text: str, sheet_name: str) -> str:
     lowered = text.casefold()
     if "datos ajustados por efecto estacional y calendario" in lowered:
@@ -113,18 +136,17 @@ def _detect_level(text: str, sheet_name: str) -> int:
 
 
 def _detect_indicators(text: str, adjusted: bool) -> tuple[str, ...]:
+    del adjusted
     lowered = text.casefold()
-    found = {"NIVEL"} if "miles de millones de pesos" in lowered else set()
+    found: set[str] = set()
+    if "miles de millones de pesos" in lowered:
+        found.add("NIVEL")
     if "tasa de crecimiento anual" in lowered:
         found.add("CRECIMIENTO_ANUAL")
-    if "tasa de crecimiento trimestral" in lowered:
+    if "tasa de crecimiento trimestre" in lowered or "tasa de crecimiento trimestral" in lowered:
         found.add("CRECIMIENTO_TRIMESTRAL")
     if "tasa de crecimiento año corrido" in lowered or "tasa de crecimiento ano corrido" in lowered:
         found.add("CRECIMIENTO_ANO_CORRIDO")
-    if adjusted:
-        found.discard("CRECIMIENTO_ANUAL")
-    else:
-        found.discard("CRECIMIENTO_TRIMESTRAL")
     return tuple(sorted(found))
 
 
@@ -195,7 +217,7 @@ class PIBWorkbookInspector:
         statuses: set[str] = set()
         indicators: set[str] = set()
         for sheet in workbook.worksheets:
-            if not re.fullmatch(r"Cuadro [1-6]", sheet.title, re.IGNORECASE):
+            if not _is_structural_table(sheet):
                 continue
             text = _sheet_text(sheet)
             series = _detect_series(text, sheet.title)
