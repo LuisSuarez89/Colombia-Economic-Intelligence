@@ -132,9 +132,10 @@ def test_detects_table_by_structural_evidence_even_with_modified_sheet_name(tmp_
     assert all(table.sheet.startswith("Hoja ") for table in result.detected_tables)
 
 
-def test_detect_indicators_from_labels_not_units() -> None:
+def test_detect_indicators_from_documented_structural_labels() -> None:
     text = (
         "Datos originales. "
+        "Series encadenadas de volumen con año de referencia 2015. "
         "Miles de millones de pesos. "
         "Tasa de crecimiento anual. "
         "Tasa de crecimiento trimestre. "
@@ -149,6 +150,12 @@ def test_detect_indicators_from_labels_not_units() -> None:
         "CRECIMIENTO_TRIMESTRAL",
         "CRECIMIENTO_ANO_CORRIDO",
     }
+
+
+def test_unit_phrase_without_structural_context_is_not_auto_level() -> None:
+    text = "Miles de millones de pesos."
+
+    assert _detect_indicators(text, adjusted=False) == ()
 
 
 def test_inspection_is_idempotent(tmp_path: Path) -> None:
