@@ -138,8 +138,19 @@ def _detect_level(text: str, sheet_name: str) -> int:
 def _detect_indicators(text: str, adjusted: bool) -> tuple[str, ...]:
     del adjusted
     lowered = text.casefold()
+    has_structural_context = any(
+        token in lowered
+        for token in (
+            "datos originales",
+            "datos ajustados por efecto estacional y calendario",
+            "series encadenadas de volumen",
+            "producto interno bruto",
+            "clasificación cuentas nacionales",
+            "codigo concepto",
+        )
+    )
     found: set[str] = set()
-    if "miles de millones de pesos" in lowered:
+    if "miles de millones de pesos" in lowered and has_structural_context:
         found.add("NIVEL")
     if "tasa de crecimiento anual" in lowered:
         found.add("CRECIMIENTO_ANUAL")
