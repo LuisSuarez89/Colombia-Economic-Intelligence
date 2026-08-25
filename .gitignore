@@ -55,3 +55,6 @@ desktop.ini
 .idea/
 *.swp
 *.swo
+
+# Local DANE workbooks - never commit raw source files
+local_data/
