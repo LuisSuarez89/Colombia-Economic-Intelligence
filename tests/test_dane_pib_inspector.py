@@ -2,7 +2,9 @@ from pathlib import Path
 
 from openpyxl import Workbook, load_workbook
 
-from colombia_economic_intelligence.sources.dane_pib_inspector import PIBWorkbookInspector
+from colombia_economic_intelligence.sources.dane_pib_inspector import (
+    PIBWorkbookInspector,
+)
 
 
 def _workbook(path: Path, future: bool = False) -> None:
@@ -74,6 +76,24 @@ def test_future_last_period_is_allowed(tmp_path: Path) -> None:
     result = PIBWorkbookInspector.inspect(path)
     assert result.is_valid
     assert result.periods[-1].label == "2027-I-pr"
+
+
+def test_indicator_detection_is_local_to_table_region(tmp_path: Path) -> None:
+    path = tmp_path / "horizontal-regions.xlsx"
+    _workbook(path)
+    workbook = load_workbook(path)
+    sheet = workbook["Cuadro 1"]
+    sheet["I3"] = "Tasa de crecimiento anual"
+    workbook.save(path)
+
+    result = PIBWorkbookInspector.inspect(path)
+
+    assert result.is_valid
+    assert [table.indicator for table in result.sheets[1].detected_tables] == [
+        "NIVEL",
+        "CRECIMIENTO_ANUAL",
+        "CRECIMIENTO_ANO_CORRIDO",
+    ]
 
 
 def test_missing_metadata_returns_warning(tmp_path: Path) -> None:

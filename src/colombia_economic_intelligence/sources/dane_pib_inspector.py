@@ -1,10 +1,12 @@
 """Structural inspection of DANE quarterly GDP production workbooks."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from pathlib import Path
 import re
-from typing import Any, Iterable
+from collections.abc import Iterable
+from dataclasses import dataclass, field
+from itertools import pairwise
+from pathlib import Path
+from typing import Any
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
@@ -80,6 +82,19 @@ class TableInspection:
     validation_status: str = "VALID"
     periods: list[Period] = field(default_factory=list)
     activities: list[ActivityRow] = field(default_factory=list)
+
+
+@dataclass(frozen=True)
+class TableRegion:
+    title_row: int
+    title: str
+    indicator: str | None
+    header_row: int
+    period_row: int
+    periods: list[Period]
+    invalid_status: list[int]
+    invalid_quarters: list[int]
+    first_period_column: int
 
 
 @dataclass
@@ -173,27 +188,53 @@ def _indicator(texts: Iterable[str]) -> str | None:
     return None
 
 
-def _find_period_header(sheet: Any, title_row: int, merged: dict[tuple[int, int], Any]) -> tuple[int, int, list[Period], list[int], list[int]] | None:
-    for header_row in range(title_row + 1, min(sheet.max_row, title_row + 12) + 1):
-        for period_row in range(header_row + 1, min(sheet.max_row, header_row + 2) + 1):
-            periods: list[Period] = []
-            invalid_status: list[int] = []
-            invalid_quarters: list[int] = []
-            for column in range(1, sheet.max_column + 1):
-                year_value = merged.get((header_row, column), sheet.cell(header_row, column).value)
-                quarter_header = _text(sheet.cell(period_row, column).value).upper()
-                parsed_year = _parse_year(year_value)
-                if parsed_year and quarter_header in QUARTERS:
-                    year, status = parsed_year
-                    label = f"{year}-{quarter_header}" + (f"-{status}" if status else "")
-                    periods.append(Period(year, QUARTERS[quarter_header], status, get_column_letter(column), label, _text(year_value), quarter_header))
-                elif re.fullmatch(r"20\d{2}[A-Za-z]+", _text(year_value)) and quarter_header in QUARTERS:
-                    invalid_status.append(column)
-                elif re.fullmatch(r"20\d{2}(?:p|pr)?", _text(year_value), re.IGNORECASE) and quarter_header and quarter_header not in QUARTERS:
-                    invalid_quarters.append(column)
-            if periods or invalid_status or invalid_quarters:
-                return header_row, period_row, periods, invalid_status, invalid_quarters
+def _period_header(sheet: Any, header_row: int, merged: dict[tuple[int, int], Any]) -> tuple[int, list[Period], list[int], list[int]] | None:
+    period_row = header_row + 1
+    if period_row > sheet.max_row:
+        return None
+    periods: list[Period] = []
+    invalid_status: list[int] = []
+    invalid_quarters: list[int] = []
+    for column in range(1, sheet.max_column + 1):
+        year_value = merged.get((header_row, column), sheet.cell(header_row, column).value)
+        quarter_header = _text(sheet.cell(period_row, column).value).upper()
+        parsed_year = _parse_year(year_value)
+        if parsed_year and quarter_header in QUARTERS:
+            year, status = parsed_year
+            label = f"{year}-{quarter_header}" + (f"-{status}" if status else "")
+            periods.append(Period(year, QUARTERS[quarter_header], status, get_column_letter(column), label, _text(year_value), quarter_header))
+        elif re.fullmatch(r"20\d{2}[A-Za-z]+", _text(year_value)) and quarter_header in QUARTERS:
+            invalid_status.append(column)
+        elif re.fullmatch(r"20\d{2}(?:p|pr)?", _text(year_value), re.IGNORECASE) and quarter_header and quarter_header not in QUARTERS:
+            invalid_quarters.append(column)
+    if periods or invalid_status or invalid_quarters:
+        return period_row, periods, invalid_status, invalid_quarters
     return None
+
+
+def _table_regions(sheet: Any, merged: dict[tuple[int, int], Any]) -> list[TableRegion]:
+    regions: list[TableRegion] = []
+    for header_row in range(1, sheet.max_row):
+        header_info = _period_header(sheet, header_row, merged)
+        if not header_info:
+            continue
+        period_row, periods, invalid_status, invalid_quarters = header_info
+        first_period_column = next((period.column for period in periods), None)
+        if first_period_column is None:
+            continue
+        first_column = next(column for column in range(1, sheet.max_column + 1) if get_column_letter(column) == first_period_column)
+        context_rows: list[tuple[int, list[str]]] = []
+        for row in range(max(1, header_row - 6), header_row):
+            descriptor = [_text(sheet.cell(row, column).value) for column in range(1, first_column)]
+            descriptor = [value for value in descriptor if value]
+            if descriptor:
+                context_rows.append((row, descriptor))
+        indicator = next((_indicator(values) for _, values in reversed(context_rows) if _indicator(values)), None)
+        title_values = context_rows[-1][1] if context_rows else []
+        title = " ".join(title_values)
+        title_row = context_rows[-1][0] if context_rows else header_row
+        regions.append(TableRegion(title_row, title, indicator, header_row, period_row, periods, invalid_status, invalid_quarters, first_column))
+    return regions
 
 
 def _activities(sheet: Any, start: int, end: int, first_period_column: int, aggregation: int) -> list[ActivityRow]:
@@ -234,31 +275,22 @@ class PIBWorkbookInspector:
             expected_aggregation = {1: 12, 2: 25, 3: 61}.get(((cuadro_number - 1) % 3 + 1) if cuadro_number else 0)
             if cuadro_number and (series != expected_series or aggregation != expected_aggregation):
                 validations.append(ValidationResult("UNEXPECTED_STRUCTURE", "ERROR", f"{sheet.title} contradice su combinación declarada", (expected_series, expected_aggregation), (series, aggregation)))
-            title_rows: list[tuple[int, str, str]] = []
-            for row in range(1, sheet.max_row + 1):
-                row_texts = _row_texts(sheet, row)
-                indicator = _indicator(row_texts)
-                if indicator or (row < sheet.max_row - 1 and any(_parse_year(value) for value in _row_texts(sheet, row + 1)) and any(_text(sheet.cell(row + 2, column).value).upper() in QUARTERS for column in range(1, sheet.max_column + 1))):
-                    title_rows.append((row, " ".join(value for value in row_texts if value), indicator))
             tables: list[TableInspection] = []
             merged = _merged_cache(sheet)
-            for index, (title_row, title, indicator) in enumerate(title_rows[:3], start=1):
-                header_info = _find_period_header(sheet, title_row, merged)
-                if not header_info:
-                    tables.append(TableInspection(f"Cuadro {cuadro_number or sheet.title}-T{index}", indicator, title, None, None, None, None, None, None, 0, 0, "ERROR"))
-                    validations.append(ValidationResult("UNEXPECTED_STRUCTURE", "ERROR", f"No se pudo interpretar la cabecera de {sheet.title} tabla {index}"))
-                    continue
-                header_row, period_row, periods, invalid_status, invalid_quarters = header_info
+            regions = _table_regions(sheet, merged)
+            for index, region in enumerate(regions[:3], start=1):
+                title, indicator = region.title, region.indicator
+                header_row, period_row = region.header_row, region.period_row
+                periods, invalid_status, invalid_quarters = region.periods, region.invalid_status, region.invalid_quarters
                 expected_indicator = EXPECTED_INDICATORS.get(series or "", ())[index - 1] if index <= len(EXPECTED_INDICATORS.get(series or "", ())) else None
                 resolved_indicator = expected_indicator if index == 1 and indicator is None and "miles de millones de pesos" in title.casefold() else indicator
-                first_col = next(column for column in range(1, sheet.max_column + 1) if get_column_letter(column) == periods[0].column)
-                next_title = title_rows[index][0] if index < len(title_rows) else sheet.max_row + 1
+                first_col = region.first_period_column
+                next_title = regions[index].title_row if index < len(regions) else sheet.max_row + 1
                 activity_rows = _activities(sheet, period_row + 1, next_title - 1, first_col, aggregation or 0)
                 table = TableInspection(f"Cuadro {cuadro_number or sheet.title}-T{index}", resolved_indicator, title, header_row, period_row, activity_rows[0].row_number if activity_rows else None, activity_rows[-1].row_number if activity_rows else None, periods[0].column, periods[-1].column, len(periods), len(activity_rows), "VALID", periods, activity_rows)
                 tables.append(table)
-                expected_indicator = EXPECTED_INDICATORS.get(series or "", ())[index - 1] if index <= len(EXPECTED_INDICATORS.get(series or "", ())) else None
                 if resolved_indicator is None or resolved_indicator != expected_indicator:
-                    validations.append(ValidationResult("UNEXPECTED_INDICATOR", "ERROR", f"Indicador incompatible en {sheet.title}", expected_indicator, indicator))
+                    validations.append(ValidationResult("UNEXPECTED_INDICATOR", "ERROR", f"Indicador incompatible en {sheet.title}", expected_indicator, resolved_indicator))
                 if invalid_status:
                     validations.append(ValidationResult("UNKNOWN_STATUS", "ERROR", f"Estado temporal desconocido en {sheet.title}"))
                 if invalid_quarters:
@@ -267,10 +299,10 @@ class PIBWorkbookInspector:
                     validations.append(ValidationResult("UNEXPECTED_STRUCTURE", "ERROR", f"No hay períodos interpretables en {sheet.title} tabla {index}"))
                     tables.append(TableInspection(f"Cuadro {cuadro_number or sheet.title}-T{index}", resolved_indicator, title, header_row, period_row, None, None, None, None, 0, 0, "INVALID"))
                     continue
-                expected_start = EXPECTED_START.get(resolved_indicator)
+                expected_start = EXPECTED_START.get(resolved_indicator) if resolved_indicator else None
                 if expected_start and (periods[0].year, periods[0].quarter) != expected_start:
                     validations.append(ValidationResult("INVALID_PERIOD", "ERROR", f"Horizonte inicial inválido en {sheet.title} tabla {index}", expected_start, (periods[0].year, periods[0].quarter)))
-                for previous, current in zip(periods, periods[1:]):
+                for previous, current in pairwise(periods):
                     expected_next = (previous.year + (previous.quarter == 4), 1 if previous.quarter == 4 else previous.quarter + 1)
                     if (current.year, current.quarter) != expected_next:
                         validations.append(ValidationResult("INVALID_PERIOD", "ERROR", f"Períodos no secuenciales en {sheet.title} tabla {index}"))
