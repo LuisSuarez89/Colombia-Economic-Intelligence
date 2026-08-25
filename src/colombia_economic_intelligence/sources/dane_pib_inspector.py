@@ -198,6 +198,10 @@ def _period_header(sheet: Any, header_row: int, merged: dict[tuple[int, int], An
     for column in range(1, sheet.max_column + 1):
         year_value = merged.get((header_row, column), sheet.cell(header_row, column).value)
         quarter_header = _text(sheet.cell(period_row, column).value).upper()
+        next_year = merged.get((header_row, column + 1), sheet.cell(header_row, column + 1).value) if column < sheet.max_column else None
+        next_quarter = _text(sheet.cell(period_row, column + 1).value).upper() if column < sheet.max_column else ""
+        if not _text(year_value) and quarter_header == "I" and next_quarter == "II" and _parse_year(next_year):
+            year_value = next_year
         parsed_year = _parse_year(year_value)
         if parsed_year and quarter_header in QUARTERS:
             year, status = parsed_year
@@ -213,8 +217,19 @@ def _period_header(sheet: Any, header_row: int, merged: dict[tuple[int, int], An
 
 
 def _table_regions(sheet: Any, merged: dict[tuple[int, int], Any]) -> list[TableRegion]:
+    header_rows = [
+        row for row in range(1, sheet.max_row)
+        if _period_header(sheet, row, merged)
+    ]
+    first_header_row = header_rows[0] if header_rows else sheet.max_row
+    preamble_indicators: list[str] = []
+    for row in range(1, first_header_row):
+        for column in range(1, sheet.max_column + 1):
+            value = _indicator([sheet.cell(row, column).value])
+            if value and value not in preamble_indicators:
+                preamble_indicators.append(value)
     regions: list[TableRegion] = []
-    for header_row in range(1, sheet.max_row):
+    for region_index, header_row in enumerate(header_rows):
         header_info = _period_header(sheet, header_row, merged)
         if not header_info:
             continue
@@ -223,6 +238,13 @@ def _table_regions(sheet: Any, merged: dict[tuple[int, int], Any]) -> list[Table
         if first_period_column is None:
             continue
         first_column = next(column for column in range(1, sheet.max_column + 1) if get_column_letter(column) == first_period_column)
+        next_header_row = header_rows[region_index + 1] if region_index + 1 < len(header_rows) else sheet.max_row + 1
+        data_rows = range(period_row + 1, next_header_row)
+        first_data_column = next(
+            (column for column in range(first_column, sheet.max_column + 1)
+             if any(isinstance(sheet.cell(row, column).value, (int, float)) for row in data_rows)),
+            first_column,
+        )
         context_rows: list[tuple[int, list[str]]] = []
         for row in range(max(1, header_row - 6), header_row):
             descriptor = [_text(sheet.cell(row, column).value) for column in range(1, first_column)]
@@ -230,10 +252,15 @@ def _table_regions(sheet: Any, merged: dict[tuple[int, int], Any]) -> list[Table
             if descriptor:
                 context_rows.append((row, descriptor))
         indicator = next((_indicator(values) for _, values in reversed(context_rows) if _indicator(values)), None)
+        if indicator is None and region_index == 0:
+            indicator = "NIVEL" if any("miles de millones de pesos" in value.casefold() for _, values in context_rows for value in values) else None
+        if indicator is None and region_index > 0 and region_index - 1 < len(preamble_indicators):
+            indicator = preamble_indicators[region_index - 1]
         title_values = context_rows[-1][1] if context_rows else []
         title = " ".join(title_values)
         title_row = context_rows[-1][0] if context_rows else header_row
-        regions.append(TableRegion(title_row, title, indicator, header_row, period_row, periods, invalid_status, invalid_quarters, first_column))
+        periods = [period for period in periods if next((column for column in range(1, sheet.max_column + 1) if get_column_letter(column) == period.column), 0) >= first_data_column]
+        regions.append(TableRegion(title_row, title, indicator, header_row, period_row, periods, invalid_status, invalid_quarters, first_data_column))
     return regions
 
 

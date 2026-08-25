@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from openpyxl import Workbook, load_workbook
 
 from colombia_economic_intelligence.sources.dane_pib_inspector import (
@@ -83,7 +84,9 @@ def test_indicator_detection_is_local_to_table_region(tmp_path: Path) -> None:
     _workbook(path)
     workbook = load_workbook(path)
     sheet = workbook["Cuadro 1"]
-    sheet["I3"] = "Tasa de crecimiento anual"
+    sheet["I1"] = "Índice"
+    sheet["I2"] = "Tasa de crecimiento anual"
+    sheet["I3"] = "Tasa de crecimiento año corrido"
     workbook.save(path)
 
     result = PIBWorkbookInspector.inspect(path)
@@ -94,6 +97,36 @@ def test_indicator_detection_is_local_to_table_region(tmp_path: Path) -> None:
         "CRECIMIENTO_ANUAL",
         "CRECIMIENTO_ANO_CORRIDO",
     ]
+
+
+def test_real_dane_workbook_integration() -> None:
+    path = Path("local_data/anex-ProduccionConstantes-IItrim2026.xlsx")
+    if not path.exists():
+        pytest.skip("real DANE workbook is not available locally")
+
+    result = PIBWorkbookInspector.inspect(path)
+
+    assert result.is_valid
+    assert result.workbook.sheet_count == 7
+    assert sum(sheet.sheet_type == "CUADRO" for sheet in result.sheets) == 6
+    assert len(result.tables) == 18
+    expected = [
+        ["NIVEL", "CRECIMIENTO_ANUAL", "CRECIMIENTO_ANO_CORRIDO"],
+        ["NIVEL", "CRECIMIENTO_ANUAL", "CRECIMIENTO_ANO_CORRIDO"],
+        ["NIVEL", "CRECIMIENTO_ANUAL", "CRECIMIENTO_ANO_CORRIDO"],
+        ["NIVEL", "CRECIMIENTO_TRIMESTRAL", "CRECIMIENTO_ANO_CORRIDO"],
+        ["NIVEL", "CRECIMIENTO_TRIMESTRAL", "CRECIMIENTO_ANO_CORRIDO"],
+        ["NIVEL", "CRECIMIENTO_TRIMESTRAL", "CRECIMIENTO_ANO_CORRIDO"],
+    ]
+    assert [
+        [table.indicator for table in sheet.detected_tables]
+        for sheet in result.sheets
+        if sheet.sheet_type == "CUADRO"
+    ] == expected
+    assert result.tables[0].periods[0].label == "2005-I"
+    assert result.tables[1].periods[0].label == "2006-I"
+    assert result.tables[10].periods[0].label == "2005-II"
+    assert result.tables[14].periods[-1].label == "2026-II-pr"
 
 
 def test_missing_metadata_returns_warning(tmp_path: Path) -> None:
