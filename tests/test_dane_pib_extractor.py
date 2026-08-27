@@ -1,6 +1,7 @@
 from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from openpyxl import Workbook
@@ -68,13 +69,15 @@ class Inspection:
 def _workbook(path: Path, value: object = 123.45) -> None:
     workbook = Workbook()
     sheet = workbook.active
+    assert sheet is not None
     sheet.title = "Cuadro 1"
-    sheet["B5"] = value
+    sheet["B5"] = cast(Any, value)
     workbook.save(path)
 
 
 def _input(path: Path, inspection: Inspection | None = None) -> ExtractionInput:
-    return ExtractionInput(path, inspection or Inspection())
+    resolved = inspection or Inspection()
+    return ExtractionInput(path, cast(Any, resolved))
 
 
 def test_extracts_value_and_preserves_lineage(tmp_path: Path) -> None:
@@ -163,7 +166,7 @@ def test_rejects_unexpected_text_and_duplicate_keys(tmp_path: Path) -> None:
     _workbook(path, "N.D.")
     strict = ExtractionInput(
         path,
-        Inspection(),
+        cast(Any, Inspection()),
         configuration=ExtractionConfiguration(discard_unexpected_text=False),
     )
     with pytest.raises(UnexpectedCellValueError):

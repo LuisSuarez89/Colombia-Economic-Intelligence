@@ -1,13 +1,14 @@
 """Extract published GDP values using a validated workbook inspection."""
 from __future__ import annotations
 
+import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Protocol, Sequence
-import logging
+from typing import Any, Protocol
 
 from openpyxl import load_workbook
 
@@ -56,7 +57,7 @@ class ExtractionInput:
     """Workbook and the inspection that describes its readable regions."""
 
     workbook_path: Path
-    inspection: "InspectionResultLike"
+    inspection: InspectionResultLike
     source_manifest: SourceManifest | None = None
     configuration: ExtractionConfiguration = field(default_factory=ExtractionConfiguration)
 
@@ -116,13 +117,13 @@ class ExtractionResult:
 class _TableLike(Protocol):
     table_id: str
     indicator: str | None
-    periods: Sequence[Any]
-    activities: Sequence[Any]
+    periods: Sequence[object]
+    activities: Sequence[object]
 
 
 class InspectionResultLike(Protocol):
     is_valid: bool
-    sheets: Sequence[Any]
+    sheets: Sequence[object]
     tables: Sequence[_TableLike]
 
 
@@ -201,7 +202,9 @@ class PIBExtractor:
                 raise ExtractionStructureError("InspectionResult contains no CUADRO sheets")
             tables_processed = 0
             for sheet_info in sheets:
-                sheet_name = getattr(sheet_info, "name", None)
+                sheet_name = _text(getattr(sheet_info, "name", None))
+                if not sheet_name:
+                    raise ExtractionStructureError("Inspected sheet has no name")
                 if sheet_name not in workbook.sheetnames:
                     raise ExtractionStructureError(f"Inspected sheet is absent: {sheet_name}")
                 worksheet = workbook[sheet_name]
