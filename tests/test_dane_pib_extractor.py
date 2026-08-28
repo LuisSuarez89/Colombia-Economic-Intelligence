@@ -1,4 +1,3 @@
-from dataclasses import dataclass, field
 from decimal import Decimal
 from pathlib import Path
 from typing import Any, cast
@@ -15,55 +14,37 @@ from colombia_economic_intelligence.sources.dane_pib_extractor import (
     PIBExtractor,
     UnexpectedCellValueError,
 )
+from colombia_economic_intelligence.sources.dane_pib_inspector import (
+    ActivityRow,
+    InspectionResult,
+    Period,
+    PIBWorkbookInspector,
+    SheetInspection,
+    TableInspection,
+    ValidationResult,
+    WorkbookMetadata,
+)
 
 
-@dataclass
-class Period:
-    year: int = 2026
-    quarter: int = 2
-    status: str | None = "pr"
-    column: str = "B"
-    label: str = "2026-II-pr"
-    year_header: str = "2026pr"
-    quarter_header: str = "II"
-
-
-@dataclass
-class Activity:
-    row_number: int = 5
-    classification_level: str = "CIIU_12"
-    classification_code: str | None = "045 - 047"
-    concept: str = "Agricultura"
-    is_total: bool = False
-    total_type: str | None = None
-
-
-@dataclass
-class Table:
-    table_id: str = "Cuadro 1-T1"
-    indicator: str | None = "NIVEL"
-    periods: list[Period] = field(default_factory=lambda: [Period()])
-    activities: list[Activity] = field(default_factory=lambda: [Activity()])
-    region_id: str = "region-1"
-    unit: str | None = "Miles de millones de pesos"
-    price_basis: str | None = "precios constantes"
-
-
-@dataclass
-class Sheet:
-    name: str = "Cuadro 1"
-    sheet_type: str = "CUADRO"
-    cuadro_number: int = 1
-    series: str = "ORIGINAL"
-    aggregation_level: int = 12
-    detected_tables: list[Table] = field(default_factory=lambda: [Table()])
-
-
-@dataclass
-class Inspection:
-    sheets: list[Sheet] = field(default_factory=lambda: [Sheet()])
-    tables: list[Table] = field(default_factory=lambda: [Table()])
-    is_valid: bool = True
+def _inspection(
+    *,
+    period: Period | None = None,
+    activity: ActivityRow | None = None,
+    table: TableInspection | None = None,
+    sheet: SheetInspection | None = None,
+) -> InspectionResult:
+    period = period or Period(2026, 2, "pr", "B", "2026-II-pr", "2026pr", "II")
+    activity = activity or ActivityRow(5, "CIIU_12", "045 - 047", "Agricultura", False, None)
+    table = table or TableInspection(
+        "Cuadro 1-T1", "NIVEL", "Miles de millones de pesos", 3, 4, 5, 5,
+        "B", "B", 1, 1, "VALID", [period], [activity],
+        "Miles de millones de pesos", "precios constantes"
+    )
+    sheet = sheet or SheetInspection("Cuadro 1", "CUADRO", 1, "ORIGINAL", 12, 1, [table], None)
+    return InspectionResult(
+        WorkbookMetadata("pib.xlsx", 1, 1, "DANE", None, 2015, ("ORIGINAL",)),
+        [sheet], [table], [period], [activity], [], []
+    )
 
 
 def _workbook(path: Path, value: object = 123.45) -> None:
@@ -75,9 +56,44 @@ def _workbook(path: Path, value: object = 123.45) -> None:
     workbook.save(path)
 
 
-def _input(path: Path, inspection: Inspection | None = None) -> ExtractionInput:
-    resolved = inspection or Inspection()
-    return ExtractionInput(path, cast(Any, resolved))
+def _inspected_workbook(path: Path) -> None:
+    workbook = Workbook()
+    index = workbook.active
+    assert index is not None
+    index.title = "Índice"
+    index["A1"] = "Series encadenadas de volumen con año de referencia 2015"
+    index["A2"] = "Fuente: DANE, PIB_T"
+    for number in range(1, 7):
+        sheet = workbook.create_sheet(f"Cuadro {number}")
+        sheet["A1"] = "Datos originales" if number <= 3 else "Datos ajustados por efecto estacional y calendario"
+        sheet["A2"] = f"Secciones CIIU Rev. 4 A.C. / {12 if number in (1, 4) else 25 if number in (2, 5) else 61} agrupaciones"
+        titles = ("Miles de millones de pesos", "Tasa de crecimiento trimestral" if number >= 4 else "Tasa de crecimiento anual", "Tasa de crecimiento año corrido")
+        starts = ((2005, 1), (2005, 2) if number >= 4 else (2006, 1), (2006, 1))
+        for offset, (title, start) in enumerate(zip(titles, starts)):
+            title_row = (3, 12, 20)[offset]
+            sheet.cell(title_row, 1).value = title
+            sheet.cell(title_row + 1, 1).value = "Sección"
+            year, quarter = start
+            column = 3
+            while (year, quarter) <= (2026, 2):
+                first_column = column
+                while quarter <= 4 and (year, quarter) <= (2026, 2):
+                    sheet.cell(title_row + 2, column).value = ("I", "II", "III", "IV")[quarter - 1]
+                    sheet.cell(title_row + 3, column).value = 10
+                    column += 1
+                    quarter += 1
+                sheet.cell(title_row + 1, first_column).value = f"{year}{'pr' if year == 2026 else ''}"
+                if column - first_column > 1:
+                    sheet.merge_cells(start_row=title_row + 1, start_column=first_column, end_row=title_row + 1, end_column=column - 1)
+                year += 1
+                quarter = 1
+            sheet.cell(title_row + 3, 1).value = "A"
+            sheet.cell(title_row + 3, 2).value = "Agricultura"
+    workbook.save(path)
+
+
+def _input(path: Path, inspection: InspectionResult | None = None) -> ExtractionInput:
+    return ExtractionInput(path, cast(Any, inspection or _inspection()))
 
 
 def test_extracts_value_and_preserves_lineage(tmp_path: Path) -> None:
@@ -110,11 +126,11 @@ def test_consumes_series_indicator_and_aggregation_from_inspection(
 ) -> None:
     path = tmp_path / "pib.xlsx"
     _workbook(path)
-    inspection = Inspection()
-    inspection.sheets[0].series = series
-    inspection.sheets[0].aggregation_level = aggregation
-    inspection.sheets[0].detected_tables[0].indicator = indicator
-    inspection.tables = inspection.sheets[0].detected_tables
+    inspection = _inspection()
+    sheet = inspection.sheets[0]
+    sheet.series = series
+    sheet.aggregation_level = aggregation
+    sheet.detected_tables[0].indicator = indicator
 
     record = PIBExtractor.extract(_input(path, inspection)).records[0]
 
@@ -137,12 +153,10 @@ def test_preserves_zero_and_discards_empty_value(tmp_path: Path) -> None:
 def test_preserves_p_status_and_future_period_without_hardcoding(tmp_path: Path) -> None:
     path = tmp_path / "pib.xlsx"
     _workbook(path)
-    inspection = Inspection()
+    inspection = _inspection()
     inspection.sheets[0].series = "AJUSTADA"
     inspection.sheets[0].detected_tables[0].indicator = "CRECIMIENTO_ANO_CORRIDO"
-    inspection.tables = inspection.sheets[0].detected_tables
-    inspection.tables[0].periods[0] = Period(year=2031, quarter=4, status="p", column="B", label="2031-IV-p", year_header="2031p", quarter_header="IV")
-    inspection.sheets[0].detected_tables = inspection.tables
+    inspection.sheets[0].detected_tables[0].periods[0] = Period(year=2031, quarter=4, status="p", column="B", label="2031-IV-p", year_header="2031p", quarter_header="IV")
 
     record = PIBExtractor.extract(_input(path, inspection)).records[0]
 
@@ -152,11 +166,14 @@ def test_preserves_p_status_and_future_period_without_hardcoding(tmp_path: Path)
 def test_rejects_invalid_inspection_and_missing_table_context(tmp_path: Path) -> None:
     path = tmp_path / "pib.xlsx"
     _workbook(path)
-    invalid = Inspection(is_valid=False)
+    invalid = _inspection()
+    invalid.validations.append(ValidationResult("INVALID", "ERROR", "invalid fixture"))
     with pytest.raises(InvalidInspectionError):
         PIBExtractor.extract(_input(path, invalid))
 
-    empty = Inspection(sheets=[Sheet(detected_tables=[])], tables=[])
+    empty = _inspection()
+    empty.sheets[0].detected_tables = []
+    empty.tables = []
     with pytest.raises(ExtractionStructureError):
         PIBExtractor.extract(_input(path, empty))
 
@@ -166,14 +183,15 @@ def test_rejects_unexpected_text_and_duplicate_keys(tmp_path: Path) -> None:
     _workbook(path, "N.D.")
     strict = ExtractionInput(
         path,
-        cast(Any, Inspection()),
+        cast(Any, _inspection()),
         configuration=ExtractionConfiguration(discard_unexpected_text=False),
     )
     with pytest.raises(UnexpectedCellValueError):
         PIBExtractor.extract(strict)
 
-    inspection = Inspection()
-    inspection.tables[0].activities = [Activity(), Activity()]
+    inspection = _inspection()
+    activity = inspection.tables[0].activities[0]
+    inspection.tables[0].activities = [activity, activity]
     inspection.sheets[0].detected_tables = inspection.tables
     _workbook(path, 10)
     with pytest.raises(DuplicateExtractionError):
@@ -190,3 +208,18 @@ def test_output_is_deterministic_and_metadata_is_separate(tmp_path: Path) -> Non
     assert first.records[0].raw_value == 10
     assert first.metadata.started_at.tzinfo is not None
     assert first.metadata.started_at != second.metadata.started_at
+
+
+def test_inspector_to_extractor_uses_real_inspection_result(tmp_path: Path) -> None:
+    path = tmp_path / "pib.xlsx"
+    _inspected_workbook(path)
+
+    inspection = PIBWorkbookInspector.inspect(path)
+    result = PIBExtractor.extract(ExtractionInput(path, inspection))
+
+    assert inspection.is_valid
+    assert len(inspection.tables) == 18
+    assert result.records
+    assert result.records[0].period_original == "2005-I"
+    assert result.records[0].status is None
+    assert result.metadata.tables_processed == 18

@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from openpyxl import load_workbook
+from openpyxl.utils.cell import column_index_from_string
 
 from .dane_pib_resolver import SourceManifest
 
@@ -282,7 +283,7 @@ class PIBExtractor:
             if workbook is not None:
                 workbook.close()
         completed_at = datetime.now(timezone.utc)
-        records.sort(key=lambda record: (record.cuadro, record.table_id, record.source_row, record.source_column))
+        records.sort(key=lambda record: (record.cuadro, record.table_id, record.source_row, column_index_from_string(record.source_column)))
         metadata = ExtractionMetadata(
             source_manifest=extraction_input.source_manifest,
             inspector_summary={"sheets": len(getattr(inspection, "sheets", ())), "tables": tables_processed, "periods": sum(len(getattr(table, "periods", ())) for table in getattr(inspection, "tables", ()))},
