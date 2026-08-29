@@ -623,7 +623,9 @@ source identity (sha256 si existe, si no source_file)
 + aggregation_level
 + indicator
 + period
-+ activity_code o activity_name
++ classification_level
++ activity_code
++ activity_name
 ```
 
 `source_row` y `source_column` diagnostican la colision; no reemplazan la
