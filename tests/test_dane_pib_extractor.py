@@ -4,6 +4,7 @@ from typing import Any, cast
 
 import pytest
 from openpyxl import Workbook
+from openpyxl import load_workbook
 
 from colombia_economic_intelligence.sources.dane_pib_extractor import (
     DuplicateExtractionError,
@@ -23,6 +24,7 @@ from colombia_economic_intelligence.sources.dane_pib_inspector import (
     TableInspection,
     ValidationResult,
     WorkbookMetadata,
+    _activities,
 )
 
 
@@ -198,6 +200,24 @@ def test_rejects_unexpected_text_and_duplicate_keys(tmp_path: Path) -> None:
         PIBExtractor.extract(_input(path, inspection))
 
 
+def test_allows_reused_activity_code_when_published_concepts_differ(tmp_path: Path) -> None:
+    path = tmp_path / "pib.xlsx"
+    _workbook(path, 10)
+    inspection = _inspection()
+    first = inspection.tables[0].activities[0]
+    second = ActivityRow(6, first.classification_level, first.classification_code, "Producto Interno Bruto", True, "PIB")
+    inspection.tables[0].activities = [first, second]
+    inspection.sheets[0].detected_tables = inspection.tables
+    workbook = load_workbook(path)
+    workbook["Cuadro 1"]["B6"] = 20
+    workbook.save(path)
+    workbook.close()
+
+    result = PIBExtractor.extract(_input(path, inspection))
+
+    assert len(result.records) == 2
+
+
 def test_output_is_deterministic_and_metadata_is_separate(tmp_path: Path) -> None:
     path = tmp_path / "pib.xlsx"
     _workbook(path, 10)
@@ -223,3 +243,20 @@ def test_inspector_to_extractor_uses_real_inspection_result(tmp_path: Path) -> N
     assert result.records[0].period_original == "2005-I"
     assert result.records[0].status is None
     assert result.metadata.tables_processed == 18
+
+
+def test_inspector_preserves_activity_level_for_mixed_classification_table(tmp_path: Path) -> None:
+    workbook = Workbook()
+    sheet = workbook.active
+    assert sheet is not None
+    sheet["B15"] = "A"
+    sheet["D15"] = "Agricultura"
+    sheet["E15"] = 10
+    sheet["C16"] = "A"
+    sheet["D16"] = "Agricultura"
+    sheet["E16"] = 20
+
+    activities = _activities(sheet, 15, 16, 5, 25)
+
+    assert activities[0].classification_level == "CIIU_12"
+    assert activities[1].classification_level == "CIIU_25"

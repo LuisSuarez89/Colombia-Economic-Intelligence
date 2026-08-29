@@ -247,9 +247,9 @@ class PIBExtractor:
                                     continue
                                 raise UnexpectedCellValueError(f"Unexpected value at {location}: {cell.value!r}")
                             period_label = _text(getattr(period, "label", None))
-                            key = (source_hash or path.name, sheet_name, table.table_id, indicator, period_label, row_number, _text(getattr(activity, "classification_code", None) or activity_name))
+                            key = (source_hash or path.name, sheet_name, table.table_id, indicator, period_label, _text(getattr(activity, "classification_level", None)), _text(getattr(activity, "classification_code", None)), activity_name)
                             if key in seen:
-                                raise DuplicateExtractionError(f"Duplicate extraction key at {location}")
+                                raise DuplicateExtractionError(f"Duplicate extraction key at {location}: {key!r}")
                             seen.add(key)
                             record = ExtractedGDPRecord(
                                 source_file=path.name,

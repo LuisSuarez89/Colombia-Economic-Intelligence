@@ -245,17 +245,25 @@ def _table_regions(sheet: Any, merged: dict[tuple[int, int], Any]) -> list[Table
 
 def _activities(sheet: Any, start: int, end: int, first_period_column: int, aggregation: int) -> list[ActivityRow]:
     result: list[ActivityRow] = []
+    levels_by_column = {
+        12: {1: "CIIU_12"},
+        25: {2: "CIIU_12", 3: "CIIU_25"},
+        61: {2: "CIIU_25", 3: "CIIU_61"},
+    }.get(aggregation, {})
     for row in range(start, end + 1):
-        values = [_text(sheet.cell(row, column).value) for column in range(1, first_period_column)]
-        values = [value for value in values if value]
-        if not values:
+        if not any(isinstance(sheet.cell(row, column).value, (int, float)) for column in range(first_period_column, sheet.max_column + 1)):
             continue
-        concept = values[-1]
-        if concept.casefold().startswith(("fuente:", "actualizado", "pprovisional", "prpreliminar")):
+        cells = [(column, _text(sheet.cell(row, column).value)) for column in range(1, first_period_column)]
+        cells = [(column, value) for column, value in cells if value]
+        if not cells:
             continue
-        code = values[-2] if len(values) > 1 else None
+        concept_column, concept = cells[-1]
+        if concept.casefold().startswith(("fuente:", "actualizado", "pprovisional", "prpreliminar", "tasa de crecimiento")) or concept.casefold() in {"sección", "seccion", "concepto"}:
+            continue
+        code_column, code = cells[-2] if len(cells) > 1 else (None, None)
         total_type = next((kind for name, kind in TOTAL_TYPES.items() if name in concept.casefold()), None)
-        result.append(ActivityRow(row, f"CIIU_{aggregation}", code, concept, total_type is not None, total_type))
+        classification_level = levels_by_column.get(code_column, f"CIIU_{aggregation}")
+        result.append(ActivityRow(row, classification_level, code, concept, total_type is not None, total_type))
     return result
 
 
@@ -285,7 +293,8 @@ class PIBWorkbookInspector:
             for index, region in enumerate(_table_regions(sheet, _merged_cache(sheet))[:3], start=1):
                 expected_indicator = EXPECTED_INDICATORS.get(series or "", ())[index - 1] if index <= len(EXPECTED_INDICATORS.get(series or "", ())) else None
                 resolved_indicator = expected_indicator if index == 1 and region.indicator is None else region.indicator
-                next_title = _table_regions(sheet, _merged_cache(sheet))[index].title_row if index < len(_table_regions(sheet, _merged_cache(sheet))) else sheet.max_row + 1
+                regions = _table_regions(sheet, _merged_cache(sheet))
+                next_title = regions[index].title_row if index < len(regions) else sheet.max_row + 1
                 activities = _activities(sheet, region.period_row + 1, next_title - 1, region.first_period_column, aggregation or 0)
                 tables.append(TableInspection(f"Cuadro {cuadro_number or sheet.title}-T{index}", resolved_indicator, region.title, region.header_row, region.period_row, activities[0].row_number if activities else None, activities[-1].row_number if activities else None, region.periods[0].column if region.periods else None, region.periods[-1].column if region.periods else None, len(region.periods), len(activities), "VALID", region.periods, activities))
                 if resolved_indicator != expected_indicator:
